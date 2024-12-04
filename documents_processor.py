@@ -109,8 +109,11 @@ class EmbeddingCreator:
     def __init__(self):
         self.model_dir = "embedModel"
         # self.loader = ModelLoader(self.model_dir)
-        self.model = MPNetEncoder(self.model_dir)
         print("model loaded successfully") 
+        self.model = MPNetEncoder(self.model_dir)
+
+        print("model loaded successfully") 
+    # def create_embeddings(self, chunks):
 
     def create_embeddings(self, chunks):
         print("before text chunks creation")
