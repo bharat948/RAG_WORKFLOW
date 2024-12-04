@@ -4,6 +4,7 @@ import os
 import io
 import re
 
+from logger import setup_logging
 import fitz
 from tqdm.auto import tqdm
 import pandas as pd
@@ -20,59 +21,75 @@ from typing import List
 
 from embed_model import MPNetEncoder
 model_dir = "embedModel"
-
-
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+import traceback
+logger = setup_logging()
 class PDFProcessor:
     @staticmethod
     def text_formatter(text: str) -> str:
-        return text.replace("\n", " ").strip()
+        try:
+            formatted_text = text.replace("\n", " ").strip()
+            logger.debug(f"Text formatted: {len(formatted_text)} characters")
+            return formatted_text
+        except Exception as e:
+            logger.error(f"Error formatting text: {e}")
+            return text
 
     @staticmethod
     def process_pdf(pdf_file: bytes, filename: str) -> list[dict]:
-        doc = fitz.open(stream=pdf_file, filetype="pdf")
-        pages_and_texts = []
-        for page_number, page in enumerate(doc):
-            text = page.get_text()
-            text = PDFProcessor.text_formatter(text)
-            pages_and_texts.append({
-                "filename": filename,
-                "page_number": page_number + 1,
-                "page_char_count": len(text),
-                "page_word_count": len(text.split(" ")),
-                "page_sentence_count_raw": len(text.split(". ")),
-                "page_token_count": len(text) / 4,
-                "text": text
-            })
-
-        
-        return pages_and_texts
+        try:
+            logger.info(f"Processing PDF: {filename}")
+            doc = fitz.open(stream=pdf_file, filetype="pdf")
+            pages_and_texts = []
+            
+            for page_number, page in enumerate(doc):
+                try:
+                    text = page.get_text()
+                    text = PDFProcessor.text_formatter(text)
+                    pages_and_texts.append({
+                        "filename": filename,
+                        "page_number": page_number + 1,
+                        "page_char_count": len(text),
+                        "page_word_count": len(text.split(" ")),
+                        "page_sentence_count_raw": len(text.split(". ")),
+                        "page_token_count": len(text) / 4,
+                        "text": text
+                    })
+                except Exception as page_error:
+                    logger.warning(f"Error processing page {page_number + 1} in {filename}: {page_error}")
+            
+            logger.info(f"PDF {filename} processed successfully. Total pages: {len(pages_and_texts)}")
+            return pages_and_texts
+        except Exception as e:
+            logger.error(f"Critical error processing PDF {filename}: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
 class SentenceProcessor:
     def __init__(self):
-        # from spacy.lang.en import English
-        # self.nlp = English()
-        # self.nlp.add_pipe("sentencizer")
-        
-        
-        nltk.download('punkt_tab')
-        # self.sentencer = sent_tokenize()
-        print("Sentence Processor class initialized")
+        try:
+            nltk.download('punkt', quiet=True)
+            logger.info("Sentence Processor initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing SentenceProcessor: {e}")
+            raise
 
     def process_sentences(self, pages_and_texts):
-        print("inside process sentences")
-        for item in tqdm(pages_and_texts):
-            # item["sentences"] = [str(sentence) for sentence in self.nlp(item["text"]).sents]
-            # item["page_sentence_count_spacy"] = len(item["sentences"])
-            item["sentences"] = sent_tokenize(item["text"])
-
-            item["sentences"] = [str(sentence) for sentence in item["sentences"]]
-    
-    # Count the sentences
-            item["page_sentence_count_nltk"] = len(item["sentences"])
-
-        df = pd.DataFrame(pages_and_texts)
-        print(df)
-        return pages_and_texts
+        try:
+            logger.info("Starting sentence processing")
+            for item in tqdm(pages_and_texts, desc="Processing Sentences"):
+                item["sentences"] = sent_tokenize(item["text"])
+                item["sentences"] = [str(sentence) for sentence in item["sentences"]]
+                item["page_sentence_count_nltk"] = len(item["sentences"])
+            
+            logger.info(f"Sentence processing completed. Total items processed: {len(pages_and_texts)}")
+            return pages_and_texts
+        except Exception as e:
+            logger.error(f"Error in sentence processing: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
 class ChunkCreator:
     @staticmethod
@@ -82,65 +99,72 @@ class ChunkCreator:
 
     @staticmethod
     def create_chunks(pages_and_texts, num_sentence_chunk_size=10):
-        for item in tqdm(pages_and_texts):
-            item["sentence_chunks"] = ChunkCreator.split_list(input_list=item["sentences"],
-                                                slice_size=num_sentence_chunk_size)
-            item["num_chunks"] = len(item["sentence_chunks"])
-        pages_and_chunks = []
-        for item in tqdm(pages_and_texts):
-            for sentence_chunk in item["sentence_chunks"]:
-                chunk_dict = {}
-                chunk_dict["page_number"] = item["page_number"]
-
-                # Join the sentences together into a paragraph-like structure, aka a chunk (so they are a single string)
-                joined_sentence_chunk = "".join(sentence_chunk).replace("  ", " ").strip()
-                joined_sentence_chunk = re.sub(r'\.([A-Z])', r'. \1', joined_sentence_chunk) # ".A" -> ". A" for any full-stop/capital letter combo
-                chunk_dict["sentence_chunk"] = joined_sentence_chunk
-
-                # Get stats about the chunk
-                chunk_dict["chunk_char_count"] = len(joined_sentence_chunk)
-                chunk_dict["chunk_word_count"] = len([word for word in joined_sentence_chunk.split(" ")])
-                chunk_dict["chunk_token_count"] = len(joined_sentence_chunk) / 4 # 1 token = ~4 characters
-
-                pages_and_chunks.append(chunk_dict)
-        return pages_and_chunks
+        try:
+            logger.info(f"Creating chunks with {num_sentence_chunk_size} sentences per chunk")
+            
+            for item in tqdm(pages_and_texts, desc="Creating Sentence Chunks"):
+                item["sentence_chunks"] = ChunkCreator.split_list(
+                    input_list=item["sentences"],
+                    slice_size=num_sentence_chunk_size
+                )
+                item["num_chunks"] = len(item["sentence_chunks"])
+            
+            pages_and_chunks = []
+            for item in tqdm(pages_and_texts, desc="Processing Chunks"):
+                for sentence_chunk in item["sentence_chunks"]:
+                    chunk_dict = {"page_number": item["page_number"]}
+                    
+                    # Join sentences
+                    joined_sentence_chunk = "".join(sentence_chunk).replace("  ", " ").strip()
+                    joined_sentence_chunk = re.sub(r'\.([A-Z])', r'. \1', joined_sentence_chunk)
+                    
+                    chunk_dict["sentence_chunk"] = joined_sentence_chunk
+                    chunk_dict["chunk_char_count"] = len(joined_sentence_chunk)
+                    chunk_dict["chunk_word_count"] = len(joined_sentence_chunk.split(" "))
+                    chunk_dict["chunk_token_count"] = len(joined_sentence_chunk) / 4
+                    
+                    pages_and_chunks.append(chunk_dict)
+            
+            logger.info(f"Chunk creation completed. Total chunks created: {len(pages_and_chunks)}")
+            return pages_and_chunks
+        except Exception as e:
+            logger.error(f"Error creating chunks: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
 class EmbeddingCreator:
     def __init__(self):
-        self.model_dir = "embedModel"
-        # self.loader = ModelLoader(self.model_dir)
-        print("model loaded successfully") 
-        self.model = MPNetEncoder(self.model_dir)
-
-        print("model loaded successfully") 
-    # def create_embeddings(self, chunks):
+        try:
+            self.model_dir = "embedModel"
+            self.model = MPNetEncoder(self.model_dir)
+            logger.info("Embedding model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading embedding model: {e}")
+            raise
 
     def create_embeddings(self, chunks):
-        print("before text chunks creation")
-        df = pd.DataFrame(chunks)
-        min_token_length = 30
-        pages_and_chunks_over_min_token_len = df[df["chunk_token_count"] > min_token_length].to_dict(orient="records")
-
-        # text_chunks = [chunk["sentence_chunk"] for chunk in chunks]
-        print("after text chunks creation")
-        # for item in tqdm(pages_and_chunks_over_min_token_len):
-        #     item["embedding"] = self.model.encode(item["sentence_chunk"])
-        # text_chunks = [item["sentence_chunk"] for item in pages_and_chunks_over_min_token_len]
-        # embeddings = self.model.encode(text_chunks, batch_size=32, convert_to_tensor=True)
-        # embeddings = self.model.encodretrieve_relevant_resourcese(text_chunks)
-        for item in tqdm(pages_and_chunks_over_min_token_len):
-            item["embedding"] = " ".join(map(str, self.model.encode(item["sentence_chunk"])))
-        # for chunk, embedding in zip(chunks, embeddings):
-        #     # print("embedding is created")
-        #     chunk["embedding"] = embedding.tolist()
-        # text_chunk_embeddings = self.model.encode(text_chunks,
-        #                                        batch_size=32, # you can use different batch sizes here for speed/performance, I found 32 works well for this use case
-        #                                        convert_to_tensor=True) 
-        # print("embedding created")
-        # df = pd.DataFrame(pages_and_chunks_over_min_token_len)
-        # print(df.head())
-        
-        return pages_and_chunks_over_min_token_len
+        try:
+            logger.info("Starting embedding creation")
+            df = pd.DataFrame(chunks)
+            
+            # Filter chunks based on token length
+            min_token_length = 30
+            pages_and_chunks_over_min_token_len = df[df["chunk_token_count"] > min_token_length].to_dict(orient="records")
+            
+            logger.info(f"Total chunks over {min_token_length} tokens: {len(pages_and_chunks_over_min_token_len)}")
+            
+            for item in tqdm(pages_and_chunks_over_min_token_len, desc="Generating Embeddings"):
+                try:
+                    item["embedding"] = " ".join(map(str, self.model.encode(item["sentence_chunk"])))
+                except Exception as embedding_error:
+                    logger.warning(f"Could not create embedding for chunk: {embedding_error}")
+            
+            logger.info("Embedding creation completed")
+            return pages_and_chunks_over_min_token_len
+        except Exception as e:
+            logger.error(f"Error in embedding creation: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
 class QueryProcessor:
     def __init__(self):
