@@ -7,6 +7,7 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 import time
 class QueryProcessor:
+
     def __init__(self):
         self.model_dir = "embedModel"
         # self.loader = ModelLoader(self.model_dir)
@@ -18,29 +19,34 @@ class QueryProcessor:
         # print(text_chunks_and_embedding_df["pages and chunk"])
         text_chunks_and_embedding_df["embedding"] = text_chunks_and_embedding_df["embedding"].fillna("[]")
 
-        text_chunks_and_embedding_df["embedding"] = text_chunks_and_embedding_df["embedding"].apply(lambda x: np.fromstring(x.strip("[]"), sep=" "))
-        max_len = max(text_chunks_and_embedding_df["embedding"].apply(len))
+        # text_chunks_and_embedding_df["embedding"] = text_chunks_and_embedding_df["embedding"].apply(lambda x: np.fromstring(x.strip("[]"), sep=" "))
+        text_chunks_and_embedding_df["embedding"] = text_chunks_and_embedding_df["embedding"].apply(
+        lambda x: np.fromstring(x.strip("[]"), sep=" ")
+        )
+        # max_len = max(text_chunks_and_embedding_df["embedding"].apply(len))
 
         # Pad or truncate all embeddings to have the same length
-        def pad_or_truncate(arr, max_len):
-            if len(arr) > max_len:
-                return arr[:max_len]
-            elif len(arr) < max_len:
-                return np.pad(arr, (0, max_len - len(arr)), mode='constant')
+        def pad_or_truncate(arr, target_dim=768):
+            if len(arr) > target_dim:
+                return arr[:target_dim]
+            elif len(arr) < target_dim:
+                return np.pad(arr, (0, target_dim - len(arr)), mode='constant')
             return arr
 
         text_chunks_and_embedding_df["embedding"] = text_chunks_and_embedding_df["embedding"].apply(
-            lambda x: pad_or_truncate(x, max_len)
+            lambda x: pad_or_truncate(x)
         )
 
         # Convert to torch tensor
         
         # Convert texts and embedding df to list of dicts
-        pages_and_chunks = text_chunks_and_embedding_df.to_dict(orient="records")
+        embeddings = torch.tensor(
+        np.array(text_chunks_and_embedding_df["embedding"].tolist()), 
+        dtype=torch.float32
+        ).to('cpu')
 
-        # Convert embeddings to torch tensor and send to device (note: NumPy arrays are float64, torch tensors are float32 by default)
-        embeddings = torch.tensor(np.array(text_chunks_and_embedding_df["embedding"].tolist()), dtype=torch.float32).to('cpu')
-        embeddings.shape
+    # Convert texts and embedding df to list of dicts
+        pages_and_chunks = text_chunks_and_embedding_df.to_dict(orient="records")
         return embeddings,pages_and_chunks
 
     def retrieve_relevant_resources(self,query: str,
@@ -54,8 +60,10 @@ class QueryProcessor:
 
     # Embed the query
         query_embedding = model.encode(query)
-
+        query_embedding = torch.tensor(query_embedding, dtype=torch.float32).view(1, -1)
         # Get dot product scores on embeddings
+        if embeddings.dim() == 1:
+            embeddings = embeddings.unsqueeze(0)
         start_time = time.time()
         dot_scores = util.dot_score(query_embedding, embeddings)[0]
         end_time = time.time()
